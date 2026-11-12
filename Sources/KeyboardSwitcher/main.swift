@@ -158,29 +158,30 @@ final class TextAccess {
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var status: NSStatusItem!
-    private var tap: CFMachPort?
+    var tap: CFMachPort?
     private var source: CFRunLoopSource?
     private var token = ""
     private var generation = 0
-    private var paused = false
+    var paused = false
     private var monitor: Any?
     private var mouseMonitor: Any?
     private var permissionTimer: Timer?
-    private var lastResult = "Проверка ввода ещё не выполнялась"
+    var lastResult = "Проверка ввода ещё не выполнялась"
     private var rightOption = RightOptionGesture()
     private var mistakes = MistakeTracker()
     private var exceptionPopover: NSPopover?
     private var pendingException: String?
     private var recordingShortcut = false
-    private var wordExceptions: Set<String> {
+    private var settings: SettingsWindowController?
+    var wordExceptions: Set<String> {
         get { Set((defaults.stringArray(forKey: "wordExceptions") ?? []).map { $0.lowercased() }) }
         set { defaults.set(Array(newValue).sorted(), forKey: "wordExceptions") }
     }
-    private var modifierShortcut: Shortcut? {
+    var modifierShortcut: Shortcut? {
         let id = defaults.string(forKey: "shortcut") ?? "rightOption"
         return Shortcut.choices.first { $0.id == id }
     }
-    private var shortcutTitle: String {
+    var shortcutTitle: String {
         modifierShortcut?.title ?? defaults.string(forKey: "shortcutTitle") ?? "⌥Space"
     }
     private struct Replacement {
@@ -197,14 +198,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private struct PendingWord { let id: Int; let word: String; var tail: String; let pid: pid_t }
     private var pending: [PendingWord] = []
     private var pendingID = 0
-    private let defaults = UserDefaults.standard
-    private let spell = NSSpellChecker.shared
-    private var exclusions: Set<String> {
+    let defaults = UserDefaults.standard
+    let spell = NSSpellChecker.shared
+    var exclusions: Set<String> {
         get { Set(defaults.stringArray(forKey: "exclusions") ?? ["com.apple.Terminal", "com.googlecode.iterm2"]) }
         set { defaults.set(Array(newValue).sorted(), forKey: "exclusions") }
     }
     /// Remembers the keyboard layout last used in each application.
-    private var perAppLayout: Bool {
+    var perAppLayout: Bool {
         get { defaults.object(forKey: "perAppLayout") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "perAppLayout") }
     }
@@ -233,7 +234,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func togglePerAppLayout() { perAppLayout.toggle(); if perAppLayout { rememberLayout() }; rebuildMenu() }
 
-    private var automatic: Bool {
+    var automatic: Bool {
         get { defaults.object(forKey: "automatic") as? Bool ?? true }
         set { defaults.set(newValue, forKey: "automatic") }
     }
@@ -277,7 +278,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func reset() { token = ""; generation += 1; pending.removeAll(); rightOption.cancel() }
 
     func menuWillOpen(_ menu: NSMenu) {
-        if let item = menu.items.first(where: { $0.tag == 103 }) { item.submenu = applicationMenu() }
+        // The status menu does not activate KeyFlip, so the frontmost app is the one the user works in.
+        guard let item = menu.items.first(where: { $0.tag == 103 }) else { return }
+        let front = NSWorkspace.shared.frontmostApplication
+        if let front, let id = front.bundleIdentifier, id != Bundle.main.bundleIdentifier {
+            item.title = "Выключить в «\(front.localizedName ?? id)»"
+            item.representedObject = id
+            item.state = exclusions.contains(id) ? .on : .off
+            item.isHidden = false
+        } else { item.isHidden = true }
     }
 
     func rebuildMenu() {
@@ -285,22 +294,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         status.button?.toolTip = "KeyFlip · " + shortcutTitle
         let menu = NSMenu()
         menu.delegate = self
-        add("Автоисправление после пробела", action: #selector(toggleAuto), state: automatic, to: menu)
+        add("Автоисправление", action: #selector(toggleAuto), state: automatic, to: menu)
         add("Пауза", action: #selector(togglePause), state: paused, to: menu)
-        add("Свои имена…", action: #selector(editNames), to: menu)
-        add("Раскладка для каждого приложения", action: #selector(togglePerAppLayout), state: perAppLayout, to: menu)
-        add("Запускать при входе", action: #selector(toggleLogin), state: SMAppService.mainApp.status == .enabled, to: menu)
-        add(LocalUpdater.isInstalled ? "Установить локальное обновление…" : "Установить в Программы…", action: #selector(updateApp), to: menu)
-        let apps = add("Исключённые приложения", to: menu)
-        apps.tag = 103
-        apps.submenu = applicationMenu()
-        let keys = add("Клавиша исправления: " + shortcutTitle, to: menu)
-        keys.submenu = shortcutMenu()
-        add("Исключения слов…", action: #selector(editWordExceptions), to: menu)
+        let app = add("Выключить в этом приложении", action: #selector(toggleFrontmostExclusion), to: menu)
+        app.tag = 103
         menu.addItem(.separator())
-        add("О программе…", action: #selector(about), to: menu)
-        add("Выйти", action: #selector(quit), to: menu)
+        let preferences = add("Настройки…", action: #selector(openSettings), to: menu)
+        preferences.keyEquivalent = ","
+        add(LocalUpdater.isInstalled ? "Установить обновление…" : "Установить в Программы…", action: #selector(updateApp), to: menu)
+        add("О KeyFlip", action: #selector(about), to: menu)
+        menu.addItem(.separator())
+        add("Выйти из KeyFlip", action: #selector(quit), to: menu)
         status.menu = menu
+        settings?.refresh()
     }
 
     @discardableResult
@@ -314,42 +320,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc func toggleAuto() { automatic.toggle(); reset(); rebuildMenu() }
     @objc func togglePause() { paused.toggle(); reset(); rebuildMenu() }
-    @objc func toggleExclusion(_ sender: NSMenuItem) {
+    @objc func toggleFrontmostExclusion(_ sender: NSMenuItem) {
         guard let id = sender.representedObject as? String else { return }
+        setExcluded(id, !exclusions.contains(id))
+    }
+    func setExcluded(_ id: String, _ excluded: Bool) {
         var items = exclusions
-        if items.contains(id) { items.remove(id) } else { items.insert(id) }
+        if excluded { items.insert(id) } else { items.remove(id) }
         exclusions = items
-        reset(); rebuildMenu()
+        settingsChanged()
+    }
+    func settingsChanged() { reset(); rebuildMenu() }
+    @objc func openSettings() { showSettings(.general) }
+    func showSettings(_ tab: SettingsWindowController.Tab) {
+        if settings == nil { settings = SettingsWindowController(app: self) }
+        settings?.show(tab)
     }
     @objc func quit() { NSApp.terminate(nil) }
     @objc func updateApp() { LocalUpdater.installOrUpdate() }
     @objc func toggleLogin() { LocalUpdater.toggleLogin(); rebuildMenu() }
-    @objc func editNames() {
-        reset()
-        let alert = NSAlert()
-        alert.messageText = "Дополнить справочник имён"
-        alert.informativeText = "Встроено \(Names.builtIn.count) написаний. Добавляй имена в правильной раскладке, например: владимир vladimir. Разделяй пробелом, запятой или новой строкой. Сохранённый список можно редактировать."
-        let input = NSTextView(frame: NSRect(x: 0, y: 0, width: 360, height: 130))
-        input.isRichText = false
-        input.string = (defaults.stringArray(forKey: "customNames") ?? []).joined(separator: "\n")
-        let scroll = NSScrollView(frame: input.frame)
-        scroll.hasVerticalScroller = true
-        scroll.documentView = input
-        alert.accessoryView = scroll
-        alert.addButton(withTitle: "Сохранить")
-        alert.addButton(withTitle: "Отмена")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let entries = input.string.components(separatedBy: CharacterSet.whitespacesAndNewlines.union(CharacterSet(charactersIn: ",;")))
-            .filter { !$0.isEmpty }
-        guard entries.allSatisfy({ (2...40).contains($0.count) && $0.allSatisfy(\.isLetter) }) else {
-            let error = NSAlert()
-            error.messageText = "Имя должно содержать от 2 до 40 букв"
-            error.informativeText = "Список не изменён. Убери цифры и другие символы и попробуй снова."
-            error.runModal()
-            return
-        }
-        defaults.set(Array(Set(entries.map { $0.lowercased() })).sorted(), forKey: "customNames")
-    }
     @objc func connect() {
         reset()
         if let source { CFRunLoopSourceInvalidate(source) }
@@ -360,7 +349,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if AXIsProcessTrusted() { start() } else { showPermissions() }
         rebuildMenu()
     }
-    @objc func about() { showAbout() }
+    @objc func about() { showSettings(.about) }
     func showPermissions() {
         let options = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true] as CFDictionary
         _ = AXIsProcessTrustedWithOptions(options)
@@ -716,42 +705,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 }
 
 extension AppDelegate {
-    func applicationMenu() -> NSMenu {
-        let menu = NSMenu()
-        let running = NSWorkspace.shared.runningApplications.filter { $0.activationPolicy == .regular && $0.bundleIdentifier != Bundle.main.bundleIdentifier }
-        var names: [String: String] = [:]
-        for app in running { if let id = app.bundleIdentifier { names[id] = app.localizedName ?? id } }
-        for id in exclusions where names[id] == nil {
-            let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: id)
-            names[id] = (url?.deletingPathExtension().lastPathComponent ?? id) + " (не запущено)"
-        }
-        add("Выбери приложения, где KeyFlip выключен", to: menu)
-        for (id, name) in names.sorted(by: { $0.value.localizedCaseInsensitiveCompare($1.value) == .orderedAscending }) {
-            let item = add(name, action: #selector(toggleExclusion(_:)), state: exclusions.contains(id), to: menu)
-            item.representedObject = id
-        }
-        return menu
-    }
-
-    func shortcutMenu() -> NSMenu {
-        let menu = NSMenu()
-        for choice in Shortcut.choices {
-            let item = add(choice.title, action: #selector(selectShortcut(_:)), state: modifierShortcut == choice, to: menu)
-            item.representedObject = choice.id
-        }
-        let space = add("⌥Space", action: #selector(selectShortcut(_:)), state: defaults.string(forKey: "shortcut") == "optionSpace", to: menu)
-        space.representedObject = "optionSpace"
-        menu.addItem(.separator())
-        add("Записать своё сочетание…", action: #selector(recordShortcut), to: menu)
-        return menu
-    }
-
-    @objc func selectShortcut(_ sender: NSMenuItem) {
-        guard let id = sender.representedObject as? String else { return }
+    func applyShortcut(_ id: String) {
         defaults.set(id, forKey: "shortcut")
         if id == "optionSpace" { defaults.set("⌥Space", forKey: "shortcutTitle") }
         rightOption = RightOptionGesture(keyCode: modifierShortcut?.keyCode ?? 61)
-        reset(); rebuildMenu()
+        settingsChanged()
     }
 
     func matchesShortcut(key: Int64, flags: CGEventFlags) -> Bool {
@@ -791,27 +749,8 @@ extension AppDelegate {
             defaults.set(key, forKey: "shortcutKey")
             defaults.set(Int(flags), forKey: "shortcutFlags")
             defaults.set(title, forKey: "shortcutTitle")
+            rightOption = RightOptionGesture(keyCode: 61)
         }
-    }
-
-    @objc func editWordExceptions() {
-        reset()
-        let alert = NSAlert()
-        alert.messageText = "Слова без автоисправления"
-        alert.informativeText = "Одно слово или адрес на строку. Регистр не учитывается. Ручное исправление выбранной клавишей продолжает работать. Чтобы удалить исключение, убери его из списка."
-        let input = NSTextView(frame: NSRect(x: 0, y: 0, width: 360, height: 170))
-        input.isRichText = false
-        input.string = wordExceptions.sorted().joined(separator: "\n")
-        let scroll = NSScrollView(frame: input.frame)
-        scroll.hasVerticalScroller = true
-        scroll.documentView = input
-        alert.accessoryView = scroll
-        alert.addButton(withTitle: "Сохранить")
-        alert.addButton(withTitle: "Отмена")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        let words = input.string.split(whereSeparator: \.isWhitespace).map { $0.lowercased() }
-        guard words.allSatisfy({ $0.count <= 254 }) else { LocalUpdater.error("Слово не должно быть длиннее 254 символов."); return }
-        wordExceptions = Set(words)
     }
 
     func suggestException(_ word: String) {
@@ -848,28 +787,17 @@ extension AppDelegate {
     }
     @objc func dismissException() { exceptionPopover?.close(); pendingException = nil }
 
-    func showAbout() {
-        let alert = NSAlert()
-        alert.messageText = "KeyFlip \(LocalUpdater.version)"
-        let tabs = NSTabView(frame: NSRect(x: 0, y: 0, width: 440, height: 260))
+    var diagnosticsText: String {
         let connected = tap.map { CGEvent.tapIsEnabled(tap: $0) } ?? false
-        let pages = [
-            ("О программе", "RU ↔ EN: слова, имена и почта.\n\nКлавиша исправления: \(shortcutTitle). Повторное нажатие отменяет последнее исправление.\n\nПосле трёх отмен автоматической замены KeyFlip предлагает добавить исходное слово в исключения.\n\nВсё работает локально, без сети и журнала ввода."),
-            ("Диагностика", "Accessibility: \(AXIsProcessTrusted() ? "разрешён" : "нет доступа")\nКлавиатура: \(connected ? "подключена" : "не подключена")\nЗащищённый ввод: \(IsSecureEventInputEnabled() ? "включён" : "выключен")\n\nПоследняя проверка: \(lastResult)\n\nСловари: \(spell.availableLanguages.filter { $0.hasPrefix("ru") || $0.hasPrefix("en") }.joined(separator: ", "))\n\n\(Bundle.main.bundlePath)")
-        ]
-        for (title, text) in pages {
-            let page = NSTabViewItem(identifier: title)
-            page.label = title
-            let label = NSTextField(wrappingLabelWithString: text)
-            label.frame = NSRect(x: 14, y: 12, width: 410, height: 220)
-            page.view = NSView(frame: NSRect(x: 0, y: 0, width: 440, height: 240))
-            page.view?.addSubview(label)
-            tabs.addTabViewItem(page)
-        }
-        alert.accessoryView = tabs
-        alert.addButton(withTitle: "Закрыть")
-        alert.addButton(withTitle: "Подключить заново")
-        if alert.runModal() == .alertSecondButtonReturn { connect() }
+        let dictionaries = spell.availableLanguages.filter { $0.hasPrefix("ru") || $0.hasPrefix("en") }.joined(separator: ", ")
+        return """
+        Accessibility: \(AXIsProcessTrusted() ? "разрешён" : "нет доступа")
+        Клавиатура: \(connected ? "подключена" : "не подключена")
+        Защищённый ввод: \(IsSecureEventInputEnabled() ? "включён" : "выключен")
+        Последняя проверка: \(lastResult)
+        Словари: \(dictionaries.isEmpty ? "нет" : dictionaries)
+        \(Bundle.main.bundlePath)
+        """
     }
 }
 
@@ -902,6 +830,11 @@ if let index = CommandLine.arguments.firstIndex(of: "--probe"), index + 1 < Comm
         }
     }
     try? lines.joined(separator: "\n").write(toFile: CommandLine.arguments[index + 1], atomically: true, encoding: .utf8)
+    exit(0)
+}
+if let index = CommandLine.arguments.firstIndex(of: "--render-settings"), index + 1 < CommandLine.arguments.count {
+    app.setActivationPolicy(.accessory)
+    SettingsWindowController(app: delegate).render(to: CommandLine.arguments[index + 1])
     exit(0)
 }
 if CommandLine.arguments.contains("--diagnostics") {
