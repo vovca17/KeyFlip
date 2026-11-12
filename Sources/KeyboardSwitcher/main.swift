@@ -173,6 +173,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var pendingException: String?
     private var recordingShortcut = false
     private var settings: SettingsWindowController?
+    var requiredWords: Set<String> {
+        get { Set(defaults.stringArray(forKey: "requiredWords") ?? ["крч"]) }
+        set { defaults.set(Array(newValue).sorted(), forKey: "requiredWords") }
+    }
     var wordExceptions: Set<String> {
         get { Set((defaults.stringArray(forKey: "wordExceptions") ?? []).map { $0.lowercased() }) }
         set { defaults.set(Array(newValue).sorted(), forKey: "wordExceptions") }
@@ -636,12 +640,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             lastResult = "Слово находится в исключениях"
             return
         }
+        guard !requiredWords.contains(word.lowercased()) else {
+            lastResult = "Слово уже записано в правильной раскладке в своём словаре"
+            return
+        }
         // Caps Lock typing («gHBDTN», «пРИВЕТ») is judged as the normally cased word.
         let caseFixed = Layout.fixInvertedCase(word)
         let source = caseFixed ?? word
         let russian = Layout.isRussian(word)
         let new: String
-        if let email = Layout.emailCandidate(word) { new = email }
+        if let required = RequiredWords.candidate(source, spellings: requiredWords) { new = required }
+        else if let email = Layout.emailCandidate(word) { new = email }
         else if let name = Names.candidate(source, additional: Set(defaults.stringArray(forKey: "customNames") ?? [])),
                 known(source, russian: russian) != true { new = name }
         else if let short = ShortWords.candidate(source) { new = short }

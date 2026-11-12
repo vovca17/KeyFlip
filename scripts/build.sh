@@ -27,7 +27,7 @@ previous = plistlib.loads(info.read_bytes()) if info.exists() else {}
 number = max(int(previous.get('CFBundleVersion','10')), int(counter.read_text()) if counter.exists() else 10) + 1
 counter.write_text(str(number))
 values = dict(CFBundleExecutable='KeyboardSwitcher', CFBundleIdentifier='local.keyboard-switcher.app',
-    CFBundleName='KeyFlip', CFBundleIconFile='Switcher.icns', CFBundlePackageType='APPL', CFBundleShortVersionString='0.5.0',
+    CFBundleName='KeyFlip', CFBundleIconFile='Switcher.icns', CFBundlePackageType='APPL', CFBundleShortVersionString='0.5.1',
     CFBundleVersion=str(number), LSMinimumSystemVersion='13.0', LSUIElement=True, NSHighResolutionCapable=True,
     KSLocalUpdatePath=str(app),
     KSSigningRequirement='=anchor apple generic and identifier "local.keyboard-switcher.app" and certificate leaf[subject.OU] = "' + os.environ['KS_SIGN_TEAM'] + '"' )

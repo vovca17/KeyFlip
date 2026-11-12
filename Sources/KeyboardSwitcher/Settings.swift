@@ -4,12 +4,13 @@ import SwitcherCore
 
 /// Compact preferences window with toolbar tabs, opened from the status menu.
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
-    enum Tab: Int { case general, exclusions, names, about }
+    enum Tab: Int { case general, exclusions, names, dictionary, about }
 
     private unowned let app: AppDelegate
     private let tabs = NSTabViewController()
     private let general: GeneralPane
     private let exclusions: ExclusionsPane
+    private let dictionary: RequiredWordsPane
     private let names: NamesPane
     private let about: AboutPane
 
@@ -18,11 +19,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         general = GeneralPane(app: app)
         exclusions = ExclusionsPane(app: app)
         names = NamesPane(app: app)
+        dictionary = RequiredWordsPane(app: app)
         about = AboutPane(app: app)
         tabs.tabStyle = .toolbar
         for (pane, title, symbol) in [(general as NSViewController, "Основные", "gearshape"),
                                       (exclusions, "Исключения", "nosign"),
                                       (names, "Имена", "person.text.rectangle"),
+                                      (dictionary, "Словарь", "book.closed"),
                                       (about, "О программе", "info.circle")] {
             let item = NSTabViewItem(viewController: pane)
             item.label = title
@@ -44,6 +47,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         for index in 0..<tabs.tabViewItems.count {
             tabs.selectedTabViewItemIndex = index
             refresh()
+            dictionary.load()
             guard let content = window?.contentView else { continue }
             content.layoutSubtreeIfNeeded()
             guard let rep = content.bitmapImageRepForCachingDisplay(in: content.bounds) else { continue }
@@ -55,6 +59,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     func show(_ tab: Tab = .general) {
         refresh()
         names.load()
+        dictionary.load()
         exclusions.loadWords()
         tabs.selectedTabViewItemIndex = tab.rawValue
         if window?.isVisible != true { window?.center() }
@@ -410,4 +415,38 @@ private final class AboutPane: Pane {
     @objc func updateApp() { app.updateApp() }
     @objc func reconnect() { app.connect(); refresh() }
     @objc func refreshNow() { refresh() }
+}
+
+// MARK: - Mandatory user spellings
+private final class RequiredWordsPane: Pane, NSTextViewDelegate {
+    private var text: NSTextView!
+    private let status = label("", secondary: true)
+
+    override func build() {
+        let title = label("Всегда исправлять")
+        title.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
+        add(title, spacingAfter: 6)
+        add(label("Добавь правильное написание, по одному слову на строку. Например: «крч» — тогда «rhx» после пробела станет «крч», даже если слова нет в системном словаре. Можно добавлять русские и английские слова.", secondary: true), spacingAfter: 10, fill: true)
+        let (scroll, view) = editor(height: 180, delegate: self)
+        text = view
+        add(scroll, spacingAfter: 6, fill: true)
+        add(status, fill: true)
+        add(label("Сохраняется автоматически. Правильно набранное слово не переключается обратно. Исключения слов, пауза и исключённые приложения имеют приоритет.", secondary: true), fill: true)
+    }
+
+    func load() {
+        text?.string = app.requiredWords.sorted().joined(separator: "\n")
+        updateStatus(invalid: [])
+    }
+
+    func textDidChange(_ notification: Notification) {
+        let entries = text.string.split(whereSeparator: \.isWhitespace).map(String.init)
+        app.requiredWords = Set(entries.compactMap(RequiredWords.normalized))
+        updateStatus(invalid: entries.filter { RequiredWords.normalized($0) == nil })
+    }
+
+    private func updateStatus(invalid: [String]) {
+        status.textColor = invalid.isEmpty ? .secondaryLabelColor : .systemRed
+        status.stringValue = invalid.isEmpty ? "Сохранено слов: \(app.requiredWords.count)" : "Не сохранены: \(invalid.prefix(5).joined(separator: ", ")). Нужны 1–40 букв одного алфавита, без цифр и знаков."
+    }
 }

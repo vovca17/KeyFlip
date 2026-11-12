@@ -2,6 +2,27 @@ import XCTest
 @testable import SwitcherCore
 
 final class LayoutTests: XCTestCase {
+    func testRequiredWordsOverrideRecognitionAndPreserveCase() {
+        let words: Set<String> = ["крч", "foobar"]
+        XCTAssertEqual(RequiredWords.candidate("rhx", spellings: words), "крч")
+        XCTAssertEqual(RequiredWords.candidate("Rhx", spellings: words), "Крч")
+        XCTAssertEqual(RequiredWords.candidate("RHX", spellings: words), "КРЧ")
+        XCTAssertEqual(RequiredWords.candidate("ащщифк", spellings: words), "foobar")
+        XCTAssertNil(RequiredWords.candidate("крч", spellings: words))
+        XCTAssertNil(RequiredWords.candidate("КРЧ", spellings: words))
+        XCTAssertNil(RequiredWords.candidate("foobar", spellings: words))
+        XCTAssertNil(RequiredWords.candidate("rhx", spellings: []))
+        XCTAssertNil(RequiredWords.candidate("rhx", spellings: ["крч", "rhx"]))
+    }
+    func testRequiredWordsValidation() {
+        XCTAssertEqual(RequiredWords.normalized("КРЧ"), "крч")
+        XCTAssertEqual(RequiredWords.normalized("FooBar"), "foobar")
+        XCTAssertNil(RequiredWords.normalized(""))
+        XCTAssertNil(RequiredWords.normalized("два слова"))
+        XCTAssertNil(RequiredWords.normalized("test123"))
+        XCTAssertNil(RequiredWords.normalized("testмир"))
+        XCTAssertNil(RequiredWords.normalized(String(repeating: "x", count: 41)))
+    }
     func testConfigurableModifierGesture() {
         for choice in Shortcut.choices {
             var gesture = RightOptionGesture(keyCode: choice.keyCode)
