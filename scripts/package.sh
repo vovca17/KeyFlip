@@ -12,8 +12,14 @@ cat > "$package_dir/Установка.txt" <<'TEXT'
 Перетащи KeyFlip.app в Applications и запусти из Программ.
 Разреши Accessibility и Input Monitoring в Privacy & Security.
 Автозапуск включается в меню ⇄ → Запускать при входе.
-Для обновления: ⇄ → Установить локальное обновление…
-Эта локальная сборка получает обновления из проекта на этом Mac.
+Для обновления: ⇄ → Проверить обновления…
+Новые версии скачиваются из GitHub Releases.
 TEXT
 hdiutil create -volname 'KeyFlip' -srcfolder "$package_dir" -format UDZO -ov "$PWD/build/KeyFlip.dmg"
 hdiutil verify "$PWD/build/KeyFlip.dmg"
+
+version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Contents/Info.plist")"
+architecture="$(uname -m)"
+/usr/bin/ditto -c -k --norsrc --noextattr --keepParent "$APP" "$PWD/build/KeyFlip-$version-macOS-$architecture.zip"
+cp "$PWD/build/KeyFlip.dmg" "$PWD/build/KeyFlip-$version-macOS-$architecture.dmg"
+(cd build && shasum -a 256 "KeyFlip-$version-macOS-$architecture.dmg" "KeyFlip-$version-macOS-$architecture.zip" > SHA256SUMS.txt)

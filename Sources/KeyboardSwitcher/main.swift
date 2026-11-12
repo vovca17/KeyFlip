@@ -305,7 +305,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         let preferences = add("Настройки…", action: #selector(openSettings), to: menu)
         preferences.keyEquivalent = ","
-        add(LocalUpdater.isInstalled ? "Установить обновление…" : "Установить в Программы…", action: #selector(updateApp), to: menu)
+        add(LocalUpdater.isInstalled ? "Проверить обновления…" : "Установить в Программы…", action: #selector(updateApp), to: menu)
         add("О KeyFlip", action: #selector(about), to: menu)
         menu.addItem(.separator())
         add("Выйти из KeyFlip", action: #selector(quit), to: menu)
@@ -341,7 +341,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         settings?.show(tab)
     }
     @objc func quit() { NSApp.terminate(nil) }
-    @objc func updateApp() { LocalUpdater.installOrUpdate() }
+    @objc func updateApp() {
+        if LocalUpdater.isInstalled { GitHubUpdater.shared.start() }
+        else { LocalUpdater.installOrUpdate() }
+    }
     @objc func toggleLogin() { LocalUpdater.toggleLogin(); rebuildMenu() }
     @objc func connect() {
         reset()
@@ -839,6 +842,21 @@ if let index = CommandLine.arguments.firstIndex(of: "--probe"), index + 1 < Comm
         }
     }
     try? lines.joined(separator: "\n").write(toFile: CommandLine.arguments[index + 1], atomically: true, encoding: .utf8)
+    exit(0)
+}
+if let index = CommandLine.arguments.firstIndex(of: "--verify-github-update"), index + 1 < CommandLine.arguments.count {
+    Task { @MainActor in
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("KeyFlip-update-check-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        do {
+            if let release = try await GitHubUpdater.latest(after: CommandLine.arguments[index + 1]) {
+                let candidate = try await GitHubUpdater.prepare(release, directory: temporary) { print($0) }
+                print("Verified GitHub update: \(release.tag_name), \(candidate.lastPathComponent)")
+            } else { print("No newer compatible GitHub release") }
+            exit(0)
+        } catch { print("Update verification failed: \(error.localizedDescription)"); exit(1) }
+    }
+    app.run()
     exit(0)
 }
 if let index = CommandLine.arguments.firstIndex(of: "--render-settings"), index + 1 < CommandLine.arguments.count {

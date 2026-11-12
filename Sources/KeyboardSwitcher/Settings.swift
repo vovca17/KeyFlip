@@ -390,7 +390,7 @@ private final class AboutPane: Pane {
         let header = NSStackView(views: [icon, titles])
         header.spacing = 14
         add(header, spacingAfter: 14)
-        add(label("Исправляет текст, набранный не в той раскладке: RU ↔ EN, имена, почта, Caps Lock. Работает локально, без сети и без журнала ввода.", secondary: false), spacingAfter: 16, fill: true)
+        add(label("Исправляет текст, набранный не в той раскладке: RU ↔ EN, имена, почта, Caps Lock. Текст обрабатывается локально, без журнала ввода. Интернет используется только по команде проверки обновлений.", secondary: false), spacingAfter: 16, fill: true)
 
         let diagTitle = label("Диагностика")
         diagTitle.font = .boldSystemFont(ofSize: NSFont.systemFontSize)
@@ -398,7 +398,7 @@ private final class AboutPane: Pane {
         diagnostics.isSelectable = true
         add(diagnostics, spacingAfter: 16, fill: true)
 
-        let update = NSButton(title: LocalUpdater.isInstalled ? "Установить обновление…" : "Установить в Программы…", target: self, action: #selector(updateApp))
+        let update = NSButton(title: LocalUpdater.isInstalled ? "Проверить обновления…" : "Установить в Программы…", target: self, action: #selector(updateApp))
         let reconnect = NSButton(title: "Подключить заново", target: self, action: #selector(reconnect))
         let refreshButton = NSButton(title: "Обновить", target: self, action: #selector(refreshNow))
         let row = NSStackView(views: [update, reconnect, refreshButton])

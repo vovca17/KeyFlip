@@ -1,7 +1,8 @@
 import AppKit
 import ServiceManagement
+import SwitcherCore
 
-/// Local-only releases. Update paths are embedded at build time, never downloaded.
+/// Shared signed installer for local development and GitHub releases.
 enum LocalUpdater {
     static var version: String {
         let info = Bundle.main.infoDictionary ?? [:]
@@ -28,19 +29,29 @@ enum LocalUpdater {
             }
             candidate = URL(fileURLWithPath: path)
         }
+        _ = installCandidate(candidate)
+    }
+
+    @discardableResult
+    static func installCandidate(_ candidate: URL) -> Bool {
+        let current = Bundle.main
         guard let data = try? Data(contentsOf: candidate.appendingPathComponent("Contents/Info.plist")),
               let release = (try? PropertyListSerialization.propertyList(from: data, format: nil)) as? [String: Any],
               release["CFBundleIdentifier"] as? String == current.bundleIdentifier else {
-            error("Новой сборки пока нет. После изменения программы собери её командой bash scripts/build.sh."); return
+            error("Новой сборки пока нет. После изменения программы собери её командой bash scripts/build.sh."); return false
         }
         if isInstalled {
-            let proposed = Int(release["CFBundleVersion"] as? String ?? "0") ?? 0
-            let running = Int(current.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0") ?? 0
-            guard proposed > running else { error("Установлена последняя локальная сборка: \(version)."); return }
+            let proposed = release["CFBundleShortVersionString"] as? String ?? ""
+            let running = current.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+            let localBuild = Int(release["CFBundleVersion"] as? String ?? "0") ?? 0
+            let runningBuild = Int(current.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0") ?? 0
+            guard UpdateFeed.newer(proposed, than: running) || (proposed == running && localBuild > runningBuild) else {
+                error("Установлена последняя версия: \(version)."); return false
+            }
         }
         guard let requirement = current.object(forInfoDictionaryKey: "KSSigningRequirement") as? String,
               let helper = current.url(forResource: "update-app", withExtension: "sh") else {
-            error("В этой сборке отсутствует установщик."); return
+            error("В этой сборке отсутствует установщик."); return false
         }
         do {
             let verification = Process()
@@ -50,9 +61,9 @@ enum LocalUpdater {
             verification.standardError = FileHandle.nullDevice
             try verification.run()
             verification.waitUntilExit()
-            guard verification.terminationStatus == 0 else { error("Подпись обновления не прошла проверку. Установка отменена."); return }
+            guard verification.terminationStatus == 0 else { error("Подпись обновления не прошла проверку. Установка отменена."); return false }
             guard FileManager.default.isWritableFile(atPath: installedURL.deletingLastPathComponent().path) else {
-                error("Нет прав записи в /Applications. Установи приложение из DMG через Finder."); return
+                error("Нет прав записи в /Applications. Установи приложение из DMG через Finder."); return false
             }
             // Run the helper from a separate location so replacing the bundle cannot remove it.
             let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("KeyboardSwitcher-\(UUID().uuidString)")
@@ -64,7 +75,8 @@ enum LocalUpdater {
             updater.arguments = [script.path, candidate.path, installedURL.path, String(ProcessInfo.processInfo.processIdentifier), requirement]
             try updater.run()
             NSApp.terminate(nil)
-        } catch { self.error("Не удалось запустить обновление: \(error.localizedDescription)") }
+            return true
+        } catch { self.error("Не удалось запустить обновление: \(error.localizedDescription)"); return false }
     }
 
     static func toggleLogin() {
